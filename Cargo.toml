@@ -1,6 +1,23 @@
-[workspace]
-
-members = [
-    "mci",
-    "mci-atsamd51"
+[package]
+name = "mci"
+version = "0.1.0"
+authors = ["Michael van Niekerk <mike@pathfinderza.com>", "qiuchengxuan <qiuchengxuan@gmail.com>"]
+edition = "2018"
+repository = "https://github.com/qiuchengxuan/sdmmc"
+description = "MultiMedia Card Interface (SD, MMC, SDIO) implementation using MCI"
+keywords = [
+    "embedded-hal-driver", "mci", "sdmmc", "mmc", "sdio"
 ]
+categories  = ["embedded", "hardware-support", "no-std"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bit_field = "~0.10"
+embedded-hal = "^0.2"
+embedded-error = "^0.3"
+
+[features]
+mmc = []
+sdio = []
+spi = []
+default = ["embedded-hal/unproven"]

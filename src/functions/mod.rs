@@ -1,4 +1,4 @@
-#[cfg(feature = "mmc")]
+pub mod mci;
 pub mod mmc;
 pub mod sd;
 #[cfg(feature = "sdio")]

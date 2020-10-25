@@ -22,7 +22,6 @@ impl From<[u8; 32]> for CsdRegister {
     }
 }
 
-#[cfg(feature = "mmc")]
 pub enum MmcCsdStructureVersion {
     Unknown = -1,
     Ver1d0 = 0,
@@ -30,7 +29,6 @@ pub enum MmcCsdStructureVersion {
     Ver1d2 = 2,
 }
 
-#[cfg(feature = "mmc")]
 impl From<u8> for MmcCsdStructureVersion {
     fn from(val: u8) -> Self {
         match val {
@@ -71,17 +69,14 @@ impl CsdRegister {
         self.csd_structure_version().into()
     }
 
-    #[cfg(feature = "mmc")]
     pub fn mmc_csd_structure_version(&self) -> MmcCsdStructureVersion {
         self.csd_structure_version().into()
     }
 
-    #[cfg(feature = "mmc")]
     pub fn set_mmc_csd_spec_version(&mut self, version: u8) {
         self.val.set_bits(122..126, version as u32);
     }
 
-    #[cfg(feature = "mmc")]
     pub fn mmc_csd_spec_version(&self) -> u8 {
         self.val.get_bits(122..126) as u8
     }

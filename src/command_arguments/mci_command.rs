@@ -11,14 +11,31 @@ impl From<u32> for MciCommand {
 }
 
 impl MciCommand {
+    pub fn get_index(&self) -> u8 {
+        self.val as u8 & 0x3F
+    }
+
+    // MCI only
     pub fn have_response(&self) -> bool {
         self.val.get_bit(8)
     }
 
+    // SPI only
+    pub fn have_8bit_response(&self) -> bool {
+        self.val.get_bit(9)
+    }
+
+    // SPI only
+    pub fn have_32bit_response(&self) -> bool {
+        self.val.get_bit(10)
+    }
+
+    // MCI only
     pub fn have_136bit_response(&self) -> bool {
         self.val.get_bit(11)
     }
 
+    // MCI only
     pub fn expect_valid_crc(&self) -> bool {
         self.val.get_bit(12)
     }

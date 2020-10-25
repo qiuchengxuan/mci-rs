@@ -1,3 +1,7 @@
+use embedded_error::mci::MciError;
+use embedded_error::ImplError;
+use embedded_hal::digital::v2::InputPin;
+
 use crate::command_arguments::mmc::BusWidth;
 use crate::command_arguments::sdio::cmd52::{Cmd52, Direction};
 use crate::command_arguments::sdio::cmd53::Cmd53;
@@ -6,16 +10,14 @@ use crate::commands::{
     SDIO_CMD5_SEND_OP_COND,
 };
 use crate::mci::Mci;
-use crate::mci_card::{ocr_voltage_support, MciCard, SD_MMC_TRANS_UNITS, SD_TRANS_MULTIPLIERS};
+use crate::mci_card::{ocr_voltage_support, MciCard};
+use crate::mmc_card::{SD_MMC_TRANS_UNITS, SD_TRANS_MULTIPLIERS};
 use crate::registers::ocr::OcrRegister;
 use crate::registers::register_address::RegisterAddress;
 use crate::registers::sdio::cccr::bus_interface::BusInterfaceControlRegister;
 use crate::registers::sdio::cccr::card_capability::CardCapabilityRegister;
 use crate::registers::sdio::cccr::function_select::FunctionSelection;
 use crate::registers::sdio::cccr::high_speed::HighSpeedRegister;
-use embedded_error::mci::MciError;
-use embedded_error::ImplError;
-use embedded_hal::digital::v2::InputPin;
 
 pub const SDIO_CCCR_CIS_PTR: u32 = 0x09;
 pub const SDIO_CISTPL_END: u8 = 0xFF;
@@ -29,24 +31,18 @@ where
 {
     /// Try to get the SDIO card's operating condition
     pub fn sdio_send_operation_condition_command(&mut self) -> Result<(), MciError> {
-        if self
-            .mci
-            .send_command(SDIO_CMD5_SEND_OP_COND.into(), 0)
-            .is_err()
-        {
+        if self.mmc_card.mmc.send_command(SDIO_CMD5_SEND_OP_COND.into(), 0).is_err() {
             // No error but card type not updated
             return Ok(());
         }
-        let resp = self.mci.get_response()?;
+        let resp = self.mmc_card.mmc.get_response()?;
         let resp = OcrRegister { val: resp };
         if !resp.number_of_io_functions() {
             // No error but card type not updated
             return Ok(());
         }
 
-        let arg = OcrRegister {
-            val: resp.val & ocr_voltage_support().val,
-        };
+        let arg = OcrRegister { val: resp.val & ocr_voltage_support().val };
         let arg = arg.val;
 
         // Wait until card is ready
@@ -56,14 +52,12 @@ where
             if i == 0 {
                 return Err(MciError::Impl(ImplError::TimedOut));
             }
-            self.mci.send_command(SDIO_CMD5_SEND_OP_COND.into(), arg)?;
-            let resp = OcrRegister {
-                val: self.mci.get_response()?,
-            };
+            self.mmc_card.mmc.send_command(SDIO_CMD5_SEND_OP_COND.into(), arg)?;
+            let resp = OcrRegister { val: self.mmc_card.mmc.get_response()? };
             if resp.card_powered_up_status() {
-                self.card_type.set_sdio(true);
+                self.mmc_card.card_type.set_sdio(true);
                 if resp.memory_present() {
-                    self.card_type.set_sd(true);
+                    self.mmc_card.card_type.set_sd(true);
                 }
                 break;
             }
@@ -93,9 +87,8 @@ where
             .set_function_number(function as u8)
             .set_read_after_write(read_after_write)
             .set_register_address(register_address);
-        self.mci
-            .send_command(SDIO_CMD52_IO_RW_DIRECT.into(), arg.val)?;
-        let resp = self.mci.get_response()? as u8;
+        self.mmc_card.mmc.send_command(SDIO_CMD52_IO_RW_DIRECT.into(), arg.val)?;
+        let resp = self.mmc_card.mmc.get_response()? as u8;
         Ok(resp)
     }
 
@@ -176,7 +169,7 @@ where
         // Decode transfer speed in Hz
         let unit = SD_MMC_TRANS_UNITS[tplfe_max_tran_speed & 0x7];
         let mult = SD_TRANS_MULTIPLIERS[(tplfe_max_tran_speed >> 3) & 0xF];
-        self.clock = unit * mult * 1000;
+        self.mmc_card.clock = unit * mult * 1000;
 
         // Note: A combo card shall be a Full-Speed SDIO card
         // which supports upto 25MHz.
@@ -215,7 +208,7 @@ where
             true,
             bus_ctrl.val,
         )?;
-        self.bus_width = BusWidth::_4BIT;
+        self.mmc_card.bus_width = BusWidth::_4BIT;
         Ok(BusWidth::_4BIT)
     }
 
@@ -252,8 +245,8 @@ where
             true,
             high_speed.val,
         )?;
-        self.high_speed = true;
-        self.clock *= 2;
+        self.mmc_card.high_speed = true;
+        self.mmc_card.clock *= 2;
         Ok(true)
     }
 
@@ -288,8 +281,7 @@ where
             .set_block_mode(false)
             .set_function_number(function as u8)
             .set_direction(direction);
-        self.mci
-            .adtc_start(command, arg.val, data_size, 1, access_block)
+        self.mmc_card.mmc.adtc_start(command, arg.val, data_size, 1, access_block)
     }
 
     pub fn sdio_read_direct(
@@ -308,8 +300,8 @@ where
         data: u8,
     ) -> Result<(), MciError> {
         self.sd_mmc_select_this_device_on_mci_and_configure_mci()?;
-        self.sdio_cmd52(Direction::Write, function, address, false, data)
-            .map(|_| ()) // TODO proper error
+        self.sdio_cmd52(Direction::Write, function, address, false, data).map(|_| ())
+        // TODO proper error
     }
 
     pub fn sdio_read_extended(
@@ -329,8 +321,8 @@ where
             size,
             true,
         )?;
-        self.mci.read_blocks(destination, 1)?;
-        self.mci.wait_until_read_finished()
+        self.mmc_card.mmc.read_blocks(destination, 1)?;
+        self.mmc_card.mmc.wait_until_read_finished()
     }
 
     pub fn sdio_write_extended(
@@ -350,7 +342,7 @@ where
             size,
             true,
         )?; // TODO proper error
-        self.mci.write_blocks(source, 1)?;
-        self.mci.wait_until_write_finished() // TODO proper error
+        self.mmc_card.mmc.write_blocks(source, 1)?;
+        self.mmc_card.mmc.wait_until_write_finished() // TODO proper error
     }
 }
