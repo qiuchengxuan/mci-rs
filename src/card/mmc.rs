@@ -1,28 +1,49 @@
 use bit_field::BitField;
 use embedded_error::mci::MciError;
 
-use crate::bus::{Adtc, Bus, Read, Write};
-use crate::card_version::CardVersion;
-use crate::card_version::MmcVersion;
+use crate::bus::SdMmcBus;
 use crate::command_arguments::mmc::{Access, BusWidth, Cmd6};
-use crate::commands::{MMC_CMD6_SWITCH, MMC_CMD8_SEND_EXT_CSD};
-use crate::mmc_card::{MmcCard, MMC_TRANS_MULTIPLIERS, SD_MMC_TRANS_UNITS};
+use crate::commands::{
+    MMC_CMD6_SWITCH, MMC_CMD8_SEND_EXT_CSD, SDMMC_CMD55_APP_CMD, SDMMC_MCI_CMD9_SEND_CSD,
+    SD_ACMD6_SET_BUS_WIDTH,
+};
 use crate::mode_index::ModeIndex;
+use crate::registers::csd::CsdRegister;
 use crate::registers::sd::card_status::CardStatusRegister;
+
+use super::card::{Card, MMC_TRANS_MULTIPLIERS, SD_MMC_TRANS_UNITS};
+use super::version::{CardVersion, MmcVersion};
 
 pub const EXT_CSD_CARD_TYPE_INDEX: u32 = 196;
 pub const EXT_CSD_SEC_COUNT_INDEX: u32 = 212;
 pub const EXT_CSD_BSIZE: u32 = 512;
 
-impl<MMC: Bus + Read + Write + Adtc> MmcCard<MMC> {
+impl<BUS: SdMmcBus> Card<BUS> {
+    /// ACMD6 = Define the data bus width to be 4 bits
+    pub fn set_data_bus_width_to_4_bits(&mut self) -> Result<(), MciError> {
+        self.bus.send_command(SDMMC_CMD55_APP_CMD.into(), (self.rca as u32) << 16)?;
+        self.bus.send_command(SD_ACMD6_SET_BUS_WIDTH.into(), 0x2)?;
+        self.bus_width = BusWidth::_4BIT;
+        Ok(())
+    }
+
+    /// CMD9: Card sends its card specific data (CSD)
+    /// self.card.csd is updated
+    pub fn mci_load_csd(&mut self) -> Result<(), MciError> {
+        let arg = (self.rca as u32) << 16;
+        self.bus.send_command(SDMMC_MCI_CMD9_SEND_CSD.into(), arg)?;
+        self.csd = CsdRegister(self.bus.get_response128()?);
+        Ok(())
+    }
+
     /// CMD6 for MMC - Switches the bus width mode
-    pub fn mmc_cmd6_set_bus_width(&mut self, bus_width: &BusWidth) -> Result<bool, MciError> {
+    pub fn set_bus_width(&mut self, bus_width: &BusWidth) -> Result<bool, MciError> {
         let mut arg = Cmd6::default();
         arg.set_access(Access::SetBits)
             .set_bus_width(&bus_width)
             .set_mode_index(ModeIndex::BusWidth);
-        self.mmc.send_command(MMC_CMD6_SWITCH.into(), arg.val)?;
-        let ret = CardStatusRegister { val: self.mmc.get_response()? };
+        self.bus.send_command(MMC_CMD6_SWITCH.into(), arg.val)?;
+        let ret = CardStatusRegister { val: self.bus.get_response()? };
         if ret.switch_error() {
             // Not supported, not a protocol error
             return Ok(false);
@@ -34,13 +55,13 @@ impl<MMC: Bus + Read + Write + Adtc> MmcCard<MMC> {
     /// CMD6 for MMC - Switches in high speed mode
     /// self.high_speed is updated
     /// self.clock is updated
-    pub fn mmc_cmd6_set_high_speed(&mut self) -> Result<bool, MciError> {
+    pub fn set_high_speed(&mut self) -> Result<bool, MciError> {
         let mut arg = Cmd6::default();
         arg.set_access(Access::WriteByte)
             .set_mode_index(ModeIndex::HsTimingIndex)
             .set_hs_timing_enable(true);
-        self.mmc.send_command(MMC_CMD6_SWITCH.into(), arg.val)?;
-        let ret = CardStatusRegister { val: self.mmc.get_response()? };
+        self.bus.send_command(MMC_CMD6_SWITCH.into(), arg.val)?;
+        let ret = CardStatusRegister { val: self.bus.get_response()? };
         if ret.switch_error() {
             // Not supported, not a protocol error
             return Ok(false);
@@ -53,14 +74,14 @@ impl<MMC: Bus + Read + Write + Adtc> MmcCard<MMC> {
     /// CMD8 - The card sends its EXT_CSD as a block of data
     /// Returns whether high speed can be handled by this
     /// self.capacity is updated
-    pub fn mmc_cmd8_high_speed_capable_and_update_capacity(&mut self) -> Result<bool, MciError> {
-        self.mmc.adtc_start(MMC_CMD8_SEND_EXT_CSD.into(), 0, 512, 1, false)?;
+    pub fn load_extcsd(&mut self) -> Result<bool, MciError> {
+        self.bus.adtc_start(MMC_CMD8_SEND_EXT_CSD.into(), 0, 512, 1, false)?;
 
         let mut index = 0u32;
         let mut word = 0u32;
         // Read in bytes (4 at a time) and not to a buffer to "fast forward" to the card type
         while index < ((EXT_CSD_CARD_TYPE_INDEX + 4) / 4) {
-            word = self.mmc.read_word()?;
+            word = self.bus.read_word()?;
             index += 1;
         }
         let high_speed_capable =
@@ -69,14 +90,14 @@ impl<MMC: Bus + Read + Write + Adtc> MmcCard<MMC> {
         if self.csd.card_size() == 0xFFF {
             // For high capacity SD/MMC card, memory capacity = sec_count * 512 bytes
             while index < (EXT_CSD_SEC_COUNT_INDEX + 4) / 4 {
-                word = self.mmc.read_word()?;
+                word = self.bus.read_word()?;
                 index += 1;
             }
             self.capacity = word
         }
         // Forward to the end
         while index < EXT_CSD_BSIZE / 4 {
-            self.mmc.read_word()?;
+            self.bus.read_word()?;
             index += 1;
         }
         Ok(high_speed_capable)
@@ -84,7 +105,7 @@ impl<MMC: Bus + Read + Write + Adtc> MmcCard<MMC> {
 
     /// Decode CSD for MMC
     /// Updates self.version, self.clock, self.capacity
-    pub fn mmc_decode_csd(&mut self) -> Result<(), MciError> {
+    pub fn decode_csd(&mut self) -> Result<(), MciError> {
         self.version = match self.csd.mmc_csd_spec_version() {
             0 => CardVersion::Mmc(MmcVersion::Mmc1d2),
             1 => CardVersion::Mmc(MmcVersion::Mmc1d4),

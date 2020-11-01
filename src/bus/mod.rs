@@ -88,3 +88,17 @@ pub trait Write {
     /// Wait until the end of writing blocks
     fn wait_until_write_finished(&mut self) -> Result<(), MciError>;
 }
+
+pub trait SpiBus: Bus + Adtc + Read + Write {}
+
+pub trait SdMmcBus: Bus + Adtc + Read + Write {
+    // TODO keep + get current selected slot
+    /// Get the maximum bus width for a device
+    fn get_bus_width(&mut self, slot: u8) -> Result<BusWidth, MciError>;
+
+    /// Whether the device is high speed capable
+    fn is_high_speed_capable(&mut self) -> Result<bool, MciError>;
+
+    /// Get 128 bits response of last command
+    fn get_response128(&mut self) -> Result<[u32; 4], MciError>;
+}
